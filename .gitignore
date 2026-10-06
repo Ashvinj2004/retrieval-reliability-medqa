@@ -1,0 +1,18 @@
+# Python environment and bytecode
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets (HuggingFace token for gated Llama weights, etc.)
+.env
+
+# Large, regenerable outputs: corpus, BM25/FAISS indexes, embeddings, raw generations.
+# These are rebuilt from code; only small files that DEFINE the experiment
+# (e.g. data/split.json) and final result tables are committed.
+artifacts/
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
