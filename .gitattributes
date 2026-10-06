@@ -1,0 +1,2 @@
+# Store text files with LF in the repo so Windows and Linux (GPU machine) checkouts agree.
+* text=auto

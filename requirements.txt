@@ -1,0 +1,3 @@
+# Local stages (1-4). Developed on Python 3.14.3; code avoids syntax newer than 3.10
+# so the same files run on Kaggle. Pinned so the paper can report exact versions.
+datasets==5.1.0
