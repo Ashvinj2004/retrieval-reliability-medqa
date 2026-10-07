@@ -92,7 +92,10 @@ Offline fallback: `ori_pqal.json` from the PubMedQA GitHub repo.
 ## 4. Three leakage controls — non-negotiable
 
 1. **Answer leak.** The source abstract's conclusion restates the answer. It is
-   removed from that document in the corpus, matching C3.
+   removed from that document in the corpus, matching C3. **Copies** of a source
+   under another PMID (conclusion intact) are removed too — they would also
+   survive the source's removal in C2b. A copy shares ≥50% (and ≥2) of the
+   source's long sentences; 2 found, both of 18019905. Largest overlap kept: 12.5%.
 2. **Title leak.** Each question *is* its article's title. All documents are
    indexed **without titles**.
 3. **Tuning leak.** Prompt, k and thresholds are fixed on the 500 dev questions;
@@ -108,7 +111,7 @@ retrieval, and the study is void.
 | Stage | Module | Purpose | GPU |
 |-------|--------|---------|-----|
 | 1 | `data.py` | Load PQA-L, freeze the official 500/500 dev/test split, majority baseline | no |
-| 2 | `corpus.py` | Dedupe PQA-L+U+A by PMID, strip source conclusions, drop titles | no |
+| 2 | `corpus.py` | Dedupe PQA-L+U+A by PMID and exact text, strip source conclusions, remove source copies, drop titles | no |
 | 3 | `index.py` | BM25 first (CPU), then MedCPT + FAISS | MedCPT only |
 | 4 | `retrieve.py` | Context builder for C1/C2/C2b/C3; Recall@k of the source | no |
 | 5 | `generate.py` | Llama inference, label + label-probability extraction | yes |
@@ -128,7 +131,7 @@ Each stage is tested end-to-end on a ~20-question slice before scaling.
 | Generator | Llama-3.1-8B-Instruct, FP16 (see Hardware), zero-shot | Open weights, fits in 2×16 GB, 128K context |
 | Decoding | Greedy (temperature 0); output restricted to one label | Deterministic, repeatable |
 | Confidence | Probability of yes/no/maybe at the answer token, renormalised | Needed for risk–coverage and calibration |
-| Corpus | PQA-L + PQA-U + PQA-A abstracts, deduped by PMID (~273.5k) | Document-level leakage control |
+| Corpus | PQA-L + PQA-U + PQA-A abstracts, deduped by PMID and exact text, source copies removed: **273,441** docs, no titles, no section headers (`data/corpus_stats.json`) | Document-level leakage control |
 | Retrieval unit | One abstract = one document, **no chunking** | Keeps "was the source retrieved?" well defined |
 | Sparse retriever | BM25 | Strong lexical baseline, CPU only |
 | Dense retriever | MedCPT query + article encoders, exact FAISS inner-product | Biomedical retriever; 768-d index ≈ 0.84 GB |
