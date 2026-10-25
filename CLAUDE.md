@@ -133,8 +133,8 @@ Each stage is tested end-to-end on a ~20-question slice before scaling.
 | Confidence | Probability of yes/no/maybe at the answer token, renormalised | Needed for risk–coverage and calibration |
 | Corpus | PQA-L + PQA-U + PQA-A abstracts, deduped by PMID and exact text, source copies removed: **273,441** docs, no titles, no section headers (`data/corpus_stats.json`) | Document-level leakage control |
 | Retrieval unit | One abstract = one document, **no chunking** | Keeps "was the source retrieved?" well defined |
-| Sparse retriever | BM25 | Strong lexical baseline, CPU only |
-| Dense retriever | MedCPT query + article encoders, exact FAISS inner-product | Biomedical retriever; 768-d index ≈ 0.84 GB |
+| Sparse retriever | BM25, hand-written (`index.py`): Lucene IDF, k1 = 1.2, b = 0.75 (fixed, not tuned), Lucene's 33 English stopwords, Porter stemming, Unicode word tokens. Same top-10 as `bm25s` for all 500 dev questions (`verify_bm25.py`). Dev Recall@5 = 84.6% | Strong lexical baseline, CPU only |
+| Dense retriever | MedCPT query + article encoders (`medcpt.py`, pinned revisions). Articles as `["", abstract]` (title slot empty, leakage control 2); [CLS] embeddings; exact inner product via one numpy matmul (same computation as FAISS IndexFlatIP). Full corpus encoded on Kaggle (`KAGGLE.md`); CPU speed here is ~3 docs/s | Biomedical retriever; 768-d embeddings ≈ 0.84 GB |
 | Top-k | k = 5 default; sweep k ∈ {1, 3, 5, 10} on dev | Position and dilution effects |
 | Hardware | Kaggle 2×T4 (free, 30 GPU-h/week). T4 has no BF16, so FP16 with the model split across both GPUs — **reported as a deviation**. 4-bit only as a reported fallback | Precision is identical in every condition, so condition comparisons stay valid; a small BF16 spot-check on dev quantifies the effect if a ≥24 GB GPU becomes available |
 

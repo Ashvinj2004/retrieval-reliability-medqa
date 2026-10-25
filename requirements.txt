@@ -1,3 +1,13 @@
 # Local stages (1-4). Developed on Python 3.14.3; code avoids syntax newer than 3.10
 # so the same files run on Kaggle. Pinned so the paper can report exact versions.
 datasets==5.1.0
+numpy==2.5.3
+scipy==1.18.1
+snowballstemmer==3.1.1
+
+# MedCPT dense retrieval (medcpt.py). On Kaggle, use the preinstalled GPU builds instead of these pins.
+torch==2.14.1
+transformers==5.20.2
+
+# Verification only (verify_bm25.py): independent BM25 implementation to check ours against.
+bm25s==0.3.13

@@ -52,6 +52,10 @@ def corpus_path(limit=None):
     return ARTIFACTS / ("corpus.jsonl" if limit is None else f"corpus_limit{limit}.jsonl")
 
 
+def stats_path(limit=None):
+    return STATS_PATH if limit is None else corpus_path(limit).with_suffix(".stats.json")
+
+
 def normalise(text):
     """Lowercase, punctuation and spacing collapsed: formatting differences cannot hide a duplicate."""
     return _NON_ALNUM.sub(" ", text.lower()).strip()
@@ -171,8 +175,7 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int, help="first N rows of PQA-U and PQA-A only (PQA-L is always complete)")
     args = ap.parse_args()
     stats = build(args.limit)
-    stats_path = STATS_PATH if args.limit is None else corpus_path(args.limit).with_suffix(".stats.json")
-    stats_path.write_text(json.dumps(stats, indent=1), encoding="utf-8")
+    stats_path(args.limit).write_text(json.dumps(stats, indent=1), encoding="utf-8")
     summary = dict(stats, removed_exact_duplicates=f"{len(stats['removed_exact_duplicates'])} (listed in stats file)")
     print(json.dumps(summary, indent=1))
-    print(f"stats -> {stats_path.relative_to(ROOT)}\ncorpus.py: all checks passed")
+    print(f"stats -> {stats_path(args.limit).relative_to(ROOT)}\ncorpus.py: all checks passed")
