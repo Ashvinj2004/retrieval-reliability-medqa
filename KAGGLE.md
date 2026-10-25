@@ -39,3 +39,35 @@ python medcpt.py --skip-encode
 ```
 
 It refuses to load if the embeddings came from a different corpus.
+
+## Stage 5: Llama answers on DEV (prompt and k are chosen here; test is NOT run yet)
+
+Needs approved access to `meta-llama/Llama-3.1-8B-Instruct` on HuggingFace and a
+token stored as a Kaggle secret named `HF_TOKEN` (Add-ons > Secrets). Never put
+the token in a cell or in the repo.
+
+```
+!git clone -b stage5-generate https://github.com/Ashvinj2004/retrieval-reliability-medqa.git
+%cd retrieval-reliability-medqa
+!pip install -q snowballstemmer
+!python corpus.py
+!git diff --stat data/corpus_stats.json
+!python index.py
+!python retrieve.py
+```
+
+```
+import os
+from kaggle_secrets import UserSecretsClient
+os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
+```
+
+First a 20-question check, then the full dev runs:
+
+```
+!python generate.py --contexts artifacts/retrieval/contexts_dev_C3.jsonl --limit 20
+!for f in artifacts/retrieval/contexts_dev_C1.jsonl artifacts/retrieval/contexts_dev_C3.jsonl artifacts/retrieval/contexts_dev_bm25_k*_C2*.jsonl; do python generate.py --contexts $f; done
+```
+
+Check after the 20-question run: `label_mass` should be close to 1 (the model
+answers with one of the three words). Download `artifacts/generations/` when done.
