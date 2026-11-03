@@ -141,6 +141,19 @@ Each stage is tested end-to-end on a ~20-question slice before scaling.
 MedCPT's article encoder caps input at 512 tokens — the share of truncated
 abstracts must be measured and reported.
 
+### Pre-registered decision rules (fixed 2026-11-03, before any Llama output)
+
+- **Retriever:** both BM25 and MedCPT are run and reported; there is no "main"
+  retriever chosen from results.
+- **k:** per retriever, the k ∈ {1, 3, 5, 10} with the highest **dev C2
+  macro-F1**; ties go to the smaller k.
+- **τ = 0.9**, fixed now. Threshold-free risk–coverage / AURC is the primary
+  reliability evidence; τ = 0.8 and 0.95 are reported as sensitivity.
+- **Prompt:** v1 stays unless the 20-question format check fails (mean
+  `label_mass` < 0.95). Any change is judged on dev only and bumps
+  `PROMPT_VERSION`.
+- Test is then run once with these choices, all four conditions, both retrievers.
+
 ---
 
 ## 7. Evaluation — accuracy is not enough
