@@ -47,14 +47,19 @@ token stored as a Kaggle secret named `HF_TOKEN` (Add-ons > Secrets). Never put
 the token in a cell or in the repo.
 
 ```
-!git clone -b stage5-generate https://github.com/Ashvinj2004/retrieval-reliability-medqa.git
+!git clone -b stage6-evaluate https://github.com/Ashvinj2004/retrieval-reliability-medqa.git
 %cd retrieval-reliability-medqa
 !pip install -q snowballstemmer
 !python corpus.py
 !git diff --stat data/corpus_stats.json
 !python index.py
 !python retrieve.py
+!python medcpt.py --batch-size 128
+!python retrieve.py --retriever medcpt
 ```
+
+(Both retrievers are run and reported; CLAUDE.md section 6, pre-registered rules.
+The MedCPT step re-encodes the corpus in this session, ~15-30 min on a T4.)
 
 ```
 import os
@@ -66,7 +71,7 @@ First a 20-question check, then the full dev runs:
 
 ```
 !python generate.py --contexts artifacts/retrieval/contexts_dev_C3.jsonl --limit 20
-!for f in artifacts/retrieval/contexts_dev_C1.jsonl artifacts/retrieval/contexts_dev_C3.jsonl artifacts/retrieval/contexts_dev_bm25_k*_C2*.jsonl; do python generate.py --contexts $f; done
+!for f in artifacts/retrieval/contexts_dev_C1.jsonl artifacts/retrieval/contexts_dev_C3.jsonl artifacts/retrieval/contexts_dev_*_k*_C2*.jsonl; do python generate.py --contexts $f; done
 ```
 
 Check after the 20-question run: `label_mass` should be close to 1 (the model
