@@ -46,8 +46,11 @@ Needs approved access to `meta-llama/Llama-3.1-8B-Instruct` on HuggingFace and a
 token stored as a Kaggle secret named `HF_TOKEN` (Add-ons > Secrets). Never put
 the token in a cell or in the repo.
 
+Clone `main` (after the `eval-sweep` and `memorisation-probe` branches are merged).
+This one session also covers Stage 3b, so the section above is only needed on its own.
+
 ```
-!git clone -b stage6-evaluate https://github.com/Ashvinj2004/retrieval-reliability-medqa.git
+!git clone https://github.com/Ashvinj2004/retrieval-reliability-medqa.git
 %cd retrieval-reliability-medqa
 !pip install -q snowballstemmer
 !python corpus.py
@@ -75,4 +78,12 @@ First a 20-question check, then the full dev runs:
 ```
 
 Check after the 20-question run: `label_mass` should be close to 1 (the model
-answers with one of the three words). Download `artifacts/generations/` when done.
+answers with one of the three words).
+
+Memorisation probe (dev, ~1 s per question on a T4):
+
+```
+!python probe.py
+```
+
+Download `artifacts/generations/` and `artifacts/probe/` when done.
