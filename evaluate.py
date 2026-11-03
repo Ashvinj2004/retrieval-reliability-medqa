@@ -18,6 +18,8 @@ from metrics import (accuracy, confident_error_rate, ece, flips, macro_f1, mcnem
                      paired_bootstrap_ci, per_class, risk_coverage)
 
 GEN = ROOT / "artifacts" / "generations"
+KS = (1, 3, 5, 10)        # same k-sweep as retrieve.py
+TAUS = (0.8, 0.9, 0.95)   # pre-registered: 0.9 primary, 0.8 / 0.95 sensitivity
 
 
 def load_condition(model, prompt_version, tag, retriever, k, condition):
@@ -66,10 +68,25 @@ if __name__ == "__main__":
     ap.add_argument("--retriever", default="bm25")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--tau", type=float, default=0.9, help="confident-error threshold (pre-registered 0.9, RESEARCH_PLAN.md section 6)")
+    ap.add_argument("--sweep", action="store_true",
+                    help="apply the pre-registered k rule: C2 macro-F1 for every k, choose the best (ties -> smaller k)")
     args = ap.parse_args()
     assert not args.tag.startswith("test"), "test results are produced once, by the final run only"
 
     gold = {q: r["label"] for q, r in load_pqal().items()}
+    if args.sweep:
+        print(f"k sweep | {args.model} | prompt {args.prompt_version} | {args.tag} | {args.retriever} | C2 on dev")
+        scores = {}
+        for k in KS:
+            rows = load_condition(args.model, args.prompt_version, args.tag, args.retriever, k, "C2")
+            qs = sorted(rows, key=int)
+            g, p = [gold[q] for q in qs], [rows[q]["pred"] for q in qs]
+            scores[k] = macro_f1(g, p)
+            hits = sum(rows[q]["source_in_context"] for q in qs)
+            print(f"  k={k:<3} macro-F1 {scores[k]:.4f}  accuracy {accuracy(g, p):.1%}  source in context {hits}/{len(qs)}")
+        best = max(KS, key=lambda k: (round(scores[k], 4), -k))  # highest macro-F1 (4 d.p.); ties -> smaller k
+        print(f"  chosen k = {best} (pre-registered rule: highest dev C2 macro-F1, ties to the smaller k)")
+        raise SystemExit(0)
     cond = {c: load_condition(args.model, args.prompt_version, args.tag, args.retriever, args.k, c)
             for c in ("C1", "C2", "C2b", "C3")}
     qids = sorted(cond["C1"], key=int)
@@ -86,6 +103,14 @@ if __name__ == "__main__":
         print(f"  {c:<5}{s['n']:>5}{s['accuracy']:>8.1%}{s['macro_f1']:>9.3f}{s['recall_maybe']:>10.1%}"
               f"{s['confident_error']:>10.1%}{s['ece']:>7.3f}{s['aurc']:>7.3f}{s['mean_conf']:>7.3f}"
               f"{s['mean_label_mass']:>7.3f}")
+
+    # Pre-registered sensitivity: conclusions must not hinge on the single cut-off tau.
+    print("\nconfident-error rate by threshold (sensitivity):")
+    results["tau_sensitivity"] = {}
+    for c, rows in cond.items():
+        g, p, cf = [gold[q] for q in qids], [rows[q]["pred"] for q in qids], [rows[q]["confidence"] for q in qids]
+        results["tau_sensitivity"][c] = {t: confident_error_rate(g, p, cf, t) for t in TAUS}
+        print(f"  {c:<5}" + "  ".join(f"tau={t}: {v:5.1%}" for t, v in results["tau_sensitivity"][c].items()))
 
     hits = [q for q in qids if cond["C2"][q]["source_in_context"]]
     misses = [q for q in qids if not cond["C2"][q]["source_in_context"]]
