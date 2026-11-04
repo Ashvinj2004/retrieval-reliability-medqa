@@ -52,7 +52,7 @@ This one session also covers Stage 3b, so the section above is only needed on it
 ```
 !git clone https://github.com/Ashvinj2004/retrieval-reliability-medqa.git
 %cd retrieval-reliability-medqa
-!pip install -q snowballstemmer
+!pip install -q snowballstemmer accelerate
 !python corpus.py
 !git diff --stat data/corpus_stats.json
 !python index.py
