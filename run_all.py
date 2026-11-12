@@ -72,6 +72,7 @@ def choose_model():
 
 
 def main(smoke):
+    sys.stdout.reconfigure(line_buffering=True)  # progress lines appear in the Kaggle log as they happen
     ensure_packages()
     from data import ROOT, load_pqal, load_split
     from evaluate import KS, SETTINGS
