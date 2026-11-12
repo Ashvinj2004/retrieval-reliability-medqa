@@ -9,5 +9,8 @@ snowballstemmer==3.1.1
 torch==2.14.1
 transformers==5.20.2
 
+# Tables and figures (report.py)
+matplotlib==3.11.2
+
 # Verification only (verify_bm25.py): independent BM25 implementation to check ours against.
 bm25s==0.3.13

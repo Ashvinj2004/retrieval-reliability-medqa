@@ -1,0 +1,314 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{hyperref}
+
+% Every result that depends on the model run is marked like this and filled from
+% artifacts/report/<model>_test/results.md (produced by report.py). Nothing is typed in by guess.
+\newcommand{\tbd}[1]{\textcolor{red}{\textbf{[[TBD: #1]]}}}
+% Generator actually used (run_log.json records it): Llama-3.1-8B-Instruct, or the
+% Qwen2.5-7B-Instruct fallback. Change this one line and see Section 3.6.
+\newcommand{\model}{Llama-3.1-8B-Instruct}
+
+\title{Does Retrieval Make Medical Question Answering More Reliable?\\
+\large A Controlled Evaluation of an Open 8B Model on PubMedQA}
+\author{Author One \and Author Two \and Author Three\\
+\small Department, University}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Retrieval-augmented generation (RAG) is widely assumed to make language models
+safer for medical question answering. Two assumptions usually go untested: that
+the retriever actually finds the evidence a question depends on, and that the
+model's confidence tells us when it does not. We test both on PubMedQA with a
+single open model (\model) under four controlled conditions: closed-book, RAG,
+RAG with the key evidence removed, and a gold-context ceiling. Every question
+comes from one known article, so we record per question whether retrieval found
+it. We close three leakage paths that would otherwise let the benchmark's
+construction masquerade as retrieval quality, fix all tuning choices on a
+development split before running the test split once, and report calibration,
+confident errors and risk--coverage alongside accuracy. \tbd{one-sentence main
+result for RQ1}. \tbd{one sentence on RQ2 (retrieval misses)}. \tbd{one sentence
+on RQ3 (does confidence drop when evidence is withheld)}.
+\end{abstract}
+
+\section{Introduction}
+
+Medical question answering systems increasingly pair a language model with a
+search step over the biomedical literature. The appeal is intuitive: if the model
+reads the relevant study before answering, it should be right more often and
+should not invent conclusions. Yet published comparisons of retrieval and
+closed-book answering usually report accuracy alone, and treat retrieval as a
+black box that either helps or not. Two questions are left open. First, when RAG
+fails, is it because the retriever missed the evidence or because the model
+misused it? Second, does the model's confidence fall when the evidence is
+absent, so that a low-confidence answer could be withheld?
+
+We study these questions in a setting where both can be measured. In PubMedQA
+\citep{jin2019pubmedqa}, each question is derived from one PubMed article whose
+abstract settles it, so for every question we know which document a perfect
+retriever should return. We hold the questions, the model, the prompt and the
+decoding fixed and vary only the evidence shown to the model:
+
+\begin{itemize}
+\item \textbf{C1, closed-book:} the question alone.
+\item \textbf{C2, RAG:} the question with the top-$k$ retrieved abstracts.
+\item \textbf{C2b, evidence withheld:} the same retrieval with the source article removed.
+\item \textbf{C3, gold context:} the question with its source abstract, conclusion removed.
+\end{itemize}
+
+The comparisons answer three research questions. \textbf{RQ1:} what does
+retrieval buy (C2 vs C1), in accuracy and in confident errors? \textbf{RQ2:} what
+does retrieval failure cost (C3 vs C2, and C2 split into retrieval hits and
+misses)? \textbf{RQ3:} does the model know when it does not know (confidence in
+C2b vs C2 on the same questions)?
+
+We do not propose a new architecture. Closed-book vs RAG comparisons
+\citep{xiong2024medrag}, gold-context evaluation and abstention studies
+\citep{ngo2024medrgb} each exist separately. Our contribution is to combine all
+four conditions on one benchmark with one open model, to measure retrieval
+success per question, and to report reliability alongside correctness under
+explicit leakage controls and pre-registered decision rules.
+
+\section{Related Work}
+
+\paragraph{Medical RAG benchmarks.} MIRAGE/MedRAG \citep{xiong2024medrag}
+evaluates many retriever and corpus combinations on five medical QA datasets and
+introduces PubMedQA*, the setting in which the gold context is withheld from the
+model; our C1 and C2 build on that setting. It reports accuracy; we add the
+per-question retrieval outcome and reliability measures.
+
+\paragraph{Abstention and robustness.} MedRGB \citep{ngo2024medrgb} studies how
+medical RAG systems handle insufficient or misleading evidence using constructed
+contexts and prompted abstention. We instead use a real retriever, remove the
+true source article (C2b), and measure abstention from the model's own
+probabilities via risk--coverage \citep{geifman2017selective}.
+
+\paragraph{Retrieval and context length.} Models use evidence unevenly across
+long contexts \citep{liu2024lost}, which motivates our sweep over the number of
+retrieved abstracts $k$. Prior work also reports RAG variants falling below
+no-retrieval baselines on medical QA \citep{whenretrievalhurts2025}, the
+precedent for our flip analysis.
+
+\paragraph{Retrievers.} We use BM25 \citep{robertson2009bm25} as a lexical
+baseline and MedCPT \citep{jin2023medcpt}, a biomedical dense retriever trained on
+PubMed search logs.
+
+\section{Method}
+
+\subsection{Data and split}
+We use the 1{,}000 expert-labelled questions of PubMedQA (PQA-L;
+\citealp{jin2019pubmedqa}): 552 \emph{yes}, 338 \emph{no}, 110 \emph{maybe}.
+Each question is its article's title phrased as a question; the context is the
+abstract without its conclusion, and the conclusion settles the answer. We adopt
+the official PubMedQA test set (500 questions) as our test split and use the
+remaining 500 as a development split; both halves contain exactly 276 / 169 / 55
+questions per label. Using the official split keeps our test numbers on the same
+questions as published reference points. The split is stored with a SHA-256
+fingerprint; the gold labels from the authors' release and from the HuggingFace
+copy agree on all 500 test questions. Answering \emph{yes} to every question
+gives 55.20\% accuracy and 0.2371 macro-F1 on either half, which we use as a
+data-loading check and as the floor.
+
+\subsection{Retrieval corpus and leakage controls}
+The corpus contains all PubMedQA abstracts: PQA-L, PQA-U (61{,}249) and PQA-A
+(211{,}269), 273{,}518 in total with no PMID shared between subsets. One abstract
+is one document; there is no chunking, so whether the source was retrieved has a
+single answer. Three controls prevent the benchmark's construction from
+inflating RAG results:
+
+\begin{enumerate}
+\item \textbf{Answer leak.} Each source article enters the corpus without its
+conclusion, exactly as in C3; all other articles keep their full abstract, since
+other papers' conclusions are legitimate evidence. Removing the conclusion by
+PMID is not sufficient: one source study appears under two further PMIDs with
+its conclusion intact. We remove any document sharing at least half (and at
+least two) of a source's sentences of eight or more words. This rule removes
+exactly those two copies; the largest overlap among documents kept is 12.5\%,
+while a looser rule would have deleted unrelated papers that merely share
+boilerplate sentences. We additionally remove 75 exact duplicates (same text,
+two PMIDs), leaving 273{,}441 documents.
+\item \textbf{Title leak.} Because each question is its article's title, titles
+are never indexed; section headers are dropped as well, so the source cannot be
+singled out by the absence of a conclusion header.
+\item \textbf{Tuning leak.} Every choice is fixed on the development split by
+rules written down before any model output existed (Section~\ref{sec:prereg});
+the test split is run once.
+\end{enumerate}
+
+The corpus build is deterministic and recorded by its SHA-256, which the
+experiment verifies after rebuilding the corpus on the GPU machine.
+
+\subsection{Retrievers}
+\textbf{BM25} is implemented directly on a sparse document--term matrix with
+Lucene's IDF, $k_1=1.2$, $b=0.75$ (fixed, not tuned), Lucene's English stopword
+list and Porter stemming. On a 5{,}000-document slice it returns the same top-10
+documents as the \texttt{bm25s} library for all 500 development questions,
+differing only in the order of exactly tied scores. \textbf{MedCPT}
+\citep{jin2023medcpt} encodes questions (max.\ 64 tokens) and abstracts (max.\ 512
+tokens) with its query and article encoders; documents are ranked by exact inner
+product. Because titles are withheld, articles are encoded with an empty title
+segment, which may handicap MedCPT relative to its intended use; the handicap is
+identical for every document. \tbd{share of abstracts truncated at 512 tokens,
+full corpus} of abstracts exceed the 512-token limit; no development question
+exceeds 64 tokens.
+
+\subsection{Conditions}
+For each question we retrieve the top 100 documents once and derive every
+condition from that ranking. C2 uses the top $k$; C2b removes the source from
+the ranking and takes the first $k$ (equivalently, retrieve $k{+}1$ and drop the
+source). On a retrieval miss, C2b therefore equals C2. C3 shows only the source,
+with exactly the text it has in the corpus. Documents are presented in rank
+order and numbered. The prompt is identical in every condition; only the block
+of abstracts changes, and it is absent in C1.
+
+\subsection{Model, answers and confidence}
+We use \model{} \citep{grattafiori2024llama3} zero-shot with fixed weights. For each question the model reads
+the prompt once; at the answer position we take its probability for the words
+\emph{yes}, \emph{no} and \emph{maybe} (summing capitalisation variants, each a
+single token), renormalise the three, and answer with the largest. This equals
+greedy decoding restricted to the three labels and yields a confidence without
+sampling. We also record the probability mass the three labels held before
+renormalising; its mean on a 20-question check was \tbd{label mass}, confirming
+the model answers in the requested format. The model runs in FP16 on two NVIDIA
+T4 GPUs, which lack BF16 support; precision is identical across conditions, so
+condition comparisons are unaffected.
+
+\subsection{Metrics and statistics}
+\textbf{Correctness:} accuracy, macro-F1 and per-class recall (\emph{maybe} in
+particular). \textbf{Reliability:} the confident-error rate (share of all
+questions answered wrongly with confidence $\geq\tau$), expected calibration
+error with ten equal-width bins \citep{guo2017calibration}, and the
+risk--coverage curve with its area (AURC; \citealp{geifman2017selective}).
+\emph{Maybe} is a gold label meaning the study was inconclusive, not abstention;
+abstention is measured only through confidence thresholds. Because the answers
+are labels, no text is fabricated; we therefore measure confident errors rather
+than claiming to detect hallucination. \textbf{Statistics:} conditions are
+compared on the same questions with exact McNemar tests \citep{mcnemar1947} and
+95\% paired bootstrap intervals (10{,}000 resamples, fixed seed;
+\citealp{efron1993bootstrap}). With 500 questions, paired differences below
+roughly 4--6 points may not be detectable, and we do not interpret them. All
+metrics are implemented by hand and unit-tested against worked examples.
+
+\subsection{Memorisation probe}
+PubMedQA abstracts predate the model's training cut-off, so closed-book accuracy
+may partly reflect memorised test items. Given the title and abstract body
+followed by ``Conclusion:'', the model generates greedily; we count a question as
+memorised if the first eight or more words reproduce the true conclusion
+verbatim, and also report the share of the conclusion's 8-grams reproduced.
+Paraphrase scores zero by design, since the abstract body already contains the
+results.
+
+\subsection{Pre-registered decisions}
+\label{sec:prereg}
+Before any model output existed we fixed: (i) both retrievers are reported, with
+no main retriever chosen from results; (ii) $k\in\{1,3,5,10\}$ is chosen per
+retriever by the highest development C2 macro-F1, ties to the smaller $k$;
+(iii) $\tau=0.9$, with 0.8 and 0.95 reported as sensitivity and threshold-free
+AURC as the primary reliability evidence; (iv) the prompt is changed only if the
+format check fails. A single script applies these rules, freezes the settings,
+and only then runs the test split once.
+
+\subsection{Deviations}
+\tbd{If the Qwen2.5-7B-Instruct \citep{qwen2024qwen25} fallback was used because Llama access was not
+granted in time, state it here: same size class, same prompt, same scoring, also
+passes the single-token label check; claims then concern this model only.
+Otherwise delete this subsection.}
+
+\section{Results}
+All numbers are on the 500 test questions unless stated otherwise.
+
+\paragraph{Retrieval.} The source abstract is in the top 5 for \tbd{BM25
+test Recall@5} (BM25) and \tbd{MedCPT test Recall@5} (MedCPT) of test questions
+(Table~\ref{tab:recall}). On the development split BM25 reaches Recall@1/5/10 of
+66.6/84.6/89.8\%. Retrieval is easier here than for real clinical questions,
+because questions are article titles and share vocabulary with their abstracts.
+The pre-registered rule selected $k=\tbd{k BM25}$ for BM25 and $k=\tbd{k MedCPT}$
+for MedCPT (Figure~\ref{fig:ksweep}).
+
+\paragraph{RQ1: what retrieval buys.} \tbd{C2 vs C1 accuracy difference with CI
+and McNemar p, both retrievers; flips right-to-wrong and wrong-to-right;
+change in confident-error rate}. Table~\ref{tab:main} gives every condition.
+
+\paragraph{RQ2: what retrieval failure costs.} \tbd{C3 vs C2 difference; C2
+accuracy and confident-error rate on hits vs misses; C1 on the same misses (H2)}.
+
+\paragraph{RQ3: does confidence track the evidence?} \tbd{mean confidence in C2b
+minus C2 on retrieval-hit questions, with CI; whether H3 holds}.
+Figure~\ref{fig:rc} shows the risk--coverage curves.
+
+\paragraph{Memorisation.} \tbd{share of test questions memorised; C1 accuracy on
+memorised vs other questions; C2 vs C1 without memorised questions}.
+
+\begin{table}[t]
+\centering\small
+\caption{Correctness and reliability per condition (test, $n=500$). Conf.\,err:
+wrong with confidence $\geq 0.9$. Mass: probability on the three labels before
+renormalising. Filled from \texttt{table1.tex}.}
+\label{tab:main}
+\tbd{insert artifacts/report/<model>\_test/table1.tex}
+\end{table}
+
+\begin{table}[t]
+\centering\small
+\caption{Recall@$k$ of the source abstract (test).}
+\label{tab:recall}
+\tbd{Table 5 of results.md}
+\end{table}
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\linewidth]{fig_risk_coverage.png}
+\tbd{fig\_risk\_coverage.png}
+\caption{Risk--coverage curves (test). Answering the most confident questions
+first, the curve shows the error rate among the answered share; lower is better.}
+\label{fig:rc}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=0.6\linewidth]{fig_k_sweep.png}
+\tbd{fig\_k\_sweep.png}
+\caption{Development C2 macro-F1 by number of retrieved abstracts; the
+pre-registered rule picks the maximum.}
+\label{fig:ksweep}
+\end{figure}
+
+\section{Discussion}
+\tbd{Interpretation, written only after the results: whether retrieval improved
+reliability and not just accuracy; where failures come from (retrieval misses vs
+misuse of retrieved evidence); whether confidence is a usable abstention signal.
+A null or negative result is reported as such.}
+
+\section{Limitations}
+We evaluate one model and one benchmark, so results may not transfer to other
+model families, sizes or datasets. PubMedQA questions are article titles, which
+makes retrieval easier than for questions posed by clinicians. The model has
+probably seen these abstracts in training; the memorisation probe detects only
+verbatim recall, not memorised facts expressed differently. MedCPT is used
+without titles, its intended input. The model runs in FP16 rather than its
+native BF16. With 500 test questions, small differences cannot be detected, and
+the retrieval-miss subgroup is small, so the RQ2 subgroup comparison has wide
+intervals. Nothing here supports clinical use.
+
+\section{Conclusion}
+\tbd{Two to three sentences, after the results.}
+
+\paragraph{Reproducibility.} Code, the frozen split, corpus statistics, the
+pre-registered settings and all model outputs are available at
+\url{https://github.com/Ashvinj2004/retrieval-reliability-medqa}. A single
+script reproduces every number from raw data.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

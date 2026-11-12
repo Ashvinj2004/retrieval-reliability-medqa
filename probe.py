@@ -24,7 +24,7 @@ from corpus import doc_text
 from data import ROOT, load_pqal, load_split
 from generate import DEFAULT_MODEL, load_model
 
-MAX_NEW_TOKENS = 64
+MAX_NEW_TOKENS = 40   # ~30 words: enough to judge an 8-word verbatim run, and keeps the GPU run short
 N = 8                 # n-gram length for verbatim overlap; 8 words rarely repeat by chance
 MEMORISED_WORDS = 8   # a leading run of >= 8 identical words is counted as memorised
 
@@ -53,29 +53,22 @@ def overlap_ngrams(generated, truth, n=N):
     return len(truth_ngrams & gen_ngrams) / len(truth_ngrams)
 
 
-if __name__ == "__main__":
-    # Self-check of the two scores on a hand-made example, before any model is loaded.
-    t = words("Breaks in the cold chain were frequent and compromised vaccine potency in two districts.")
-    g = words("Breaks in the cold chain were frequent and compromised the potency of vaccines.")
-    assert leading_match(g, t) == 9                      # 'breaks ... compromised' then 'the' != 'vaccine'
-    assert abs(overlap_ngrams(g, t) - 2 / 7) < 1e-12    # 14 truth words -> 7 eight-grams; 2 reproduced
+def probe_path(model_name, split, limit=None):
+    return ROOT / "artifacts" / "probe" / f"{model_name.split('/')[-1]}_{split}{'_q' + str(limit) if limit else ''}.jsonl"
 
-    ap = argparse.ArgumentParser(description="Verbatim conclusion-recall probe (dev questions only).")
-    ap.add_argument("--model", default=DEFAULT_MODEL)
-    ap.add_argument("--limit", type=int, help="first N dev questions only")
-    args = ap.parse_args()
 
+def run_probe(tok, model, model_name, records, qids, split, limit=None):
+    """Probe every question in `qids`; the model is passed in so a caller loads it once. Resumable."""
     import torch
 
-    records = load_pqal()
-    dev, _ = load_split(records)  # dev only, like every other analysis before the final run
-    qids = dev[: args.limit]
-    tok, model = load_model(args.model)
-
-    out = ROOT / "artifacts" / "probe" / f"{args.model.split('/')[-1]}_dev{'_q' + str(args.limit) if args.limit else ''}.jsonl"
+    out = probe_path(model_name, split, limit)
+    if out.exists() and sum(1 for _ in open(out, encoding="utf-8")) == len(qids):
+        print(f"  already done: {out.name}")
+        return out
     out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".partial")
     t0, n_mem = time.time(), 0
-    with open(out, "wb") as f:
+    with open(tmp, "wb") as f:
         for i, q in enumerate(qids, 1):
             r = records[q]
             prompt = f"Title: {r['question']}\nAbstract: {doc_text(r['contexts'])}\nConclusion:"
@@ -86,14 +79,34 @@ if __name__ == "__main__":
             generated = tok.decode(gen_ids[0, enc["input_ids"].shape[1]:], skip_special_tokens=True)
             gw, tw = words(generated), words(r["long_answer"])
             row = {"qid": q, "leading_match": leading_match(gw, tw), "overlap_8gram": overlap_ngrams(gw, tw),
-                   "generated": generated, "model": args.model}
-            n_mem += row["leading_match"] >= MEMORISED_WORDS
+                   "memorised": leading_match(gw, tw) >= MEMORISED_WORDS, "generated": generated, "model": model_name}
+            n_mem += row["memorised"]
             f.write((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
-            if i % 50 == 0 or i == len(qids):
-                print(f"  {i}/{len(qids)} ({(time.time() - t0) / i:.1f}s per question)")
-
+            if i % 100 == 0 or i == len(qids):
+                print(f"  probe {split}: {i}/{len(qids)} ({(time.time() - t0) / i:.1f}s per question)")
+    tmp.replace(out)
     rows = [json.loads(line) for line in open(out, encoding="utf-8")]
     mean_overlap = sum(r["overlap_8gram"] for r in rows) / len(rows)
-    print(f"\n{len(rows)} dev questions | leading match >= {MEMORISED_WORDS} words: {n_mem} ({n_mem / len(rows):.1%})"
+    print(f"  {len(rows)} {split} questions | leading match >= {MEMORISED_WORDS} words: {n_mem} ({n_mem / len(rows):.1%})"
           f" | mean 8-gram overlap {mean_overlap:.1%}")
-    print(f"wrote {out.relative_to(ROOT)}")
+    return out
+
+
+if __name__ == "__main__":
+    # Self-check of the two scores on a hand-made example, before any model is loaded.
+    t = words("Breaks in the cold chain were frequent and compromised vaccine potency in two districts.")
+    g = words("Breaks in the cold chain were frequent and compromised the potency of vaccines.")
+    assert leading_match(g, t) == 9                      # 'breaks ... compromised' then 'the' != 'vaccine'
+    assert abs(overlap_ngrams(g, t) - 2 / 7) < 1e-12    # 14 truth words -> 7 eight-grams; 2 reproduced
+
+    ap = argparse.ArgumentParser(description="Verbatim conclusion-recall probe.")
+    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--split", choices=("dev", "test"), default="dev")
+    ap.add_argument("--limit", type=int, help="first N questions only")
+    args = ap.parse_args()
+
+    records = load_pqal()
+    dev, test = load_split(records)
+    qids = (dev if args.split == "dev" else test)[: args.limit]
+    tok, model = load_model(args.model)
+    print(f"wrote {run_probe(tok, model, args.model, records, qids, args.split, args.limit).relative_to(ROOT)}")

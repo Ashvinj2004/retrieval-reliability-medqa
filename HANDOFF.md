@@ -1,5 +1,8 @@
 # Handoff: running the Llama experiments
 
+> **Superseded by `RUN_ME.md`**: `run_all.py` now does every step below in one
+> command. This file is kept as a reference for running the steps by hand.
+
 This file takes over from the person who built the pipeline. Everything up to
 the model runs is finished and tested. What is left needs a GPU and access to
 Llama, which is what this handoff covers. Read it once fully before starting.

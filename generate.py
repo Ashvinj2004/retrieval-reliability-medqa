@@ -93,6 +93,39 @@ def read_jsonl(path):
         return [json.loads(line) for line in f]
 
 
+def output_path(model_name, contexts_path):
+    return ROOT / "artifacts" / "generations" / f"{model_name.split('/')[-1]}_{PROMPT_VERSION}_{Path(contexts_path).stem}.jsonl"
+
+
+def run_file(tok, model, model_name, contexts_path, records, limit=None):
+    """Score every question in one context file. The model is passed in, so a caller
+    scoring many files loads it once. A finished file is skipped (safe to resume)."""
+    rows = read_jsonl(contexts_path)[:limit]
+    assert all("label" not in r for r in rows), "context files must not carry gold labels"
+    out = output_path(model_name, contexts_path)
+    if out.exists() and len(read_jsonl(out)) == len(rows):
+        print(f"  already done: {out.name}")
+        return out
+    label_ids = label_token_ids(tok)
+    revision = getattr(model.config, "_commit_hash", None)  # exact weights used, for the paper
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".partial")  # renamed only when complete, so a crash never leaves a "finished" file
+    t0 = time.time()
+    with open(tmp, "wb") as f:
+        for i, r in enumerate(rows, 1):
+            probs, mass, n_tok = score(tok, model, label_ids, build_messages(records[r["qid"]]["question"], r["documents"]))
+            pred = max(LABELS, key=probs.get)
+            row = {"qid": r["qid"], "condition": r["condition"], "retriever": r["retriever"], "k": r["k"],
+                   "source_in_context": r["source_in_context"], "pred": pred, "confidence": probs[pred],
+                   "probs": probs, "label_mass": mass, "prompt_tokens": n_tok,
+                   "model": model_name, "model_revision": revision, "prompt_version": PROMPT_VERSION}
+            f.write((json.dumps(row) + "\n").encode("utf-8"))
+            if i % 100 == 0 or i == len(rows):
+                print(f"  {out.name}: {i}/{len(rows)} ({(time.time() - t0) / i:.2f}s per question)")
+    tmp.replace(out)
+    return out
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Score yes/no/maybe probabilities for one context file.")
     ap.add_argument("--contexts", required=True, type=Path)
@@ -103,7 +136,6 @@ if __name__ == "__main__":
 
     records = load_pqal()
     rows = read_jsonl(args.contexts)[: args.limit]
-    assert all("label" not in r for r in rows), "context files must not carry gold labels"
 
     if args.dry_run:
         r = rows[0]
@@ -112,19 +144,4 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     tok, model = load_model(args.model)
-    label_ids = label_token_ids(tok)
-    out_path = ROOT / "artifacts" / "generations" / f"{args.model.split('/')[-1]}_{PROMPT_VERSION}_{args.contexts.stem}.jsonl"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    t0 = time.time()
-    with open(out_path, "wb") as f:
-        for i, r in enumerate(rows, 1):
-            probs, mass, n_tok = score(tok, model, label_ids, build_messages(records[r["qid"]]["question"], r["documents"]))
-            pred = max(LABELS, key=probs.get)
-            row = {"qid": r["qid"], "condition": r["condition"], "retriever": r["retriever"], "k": r["k"],
-                   "source_in_context": r["source_in_context"], "pred": pred, "confidence": probs[pred],
-                   "probs": probs, "label_mass": mass, "prompt_tokens": n_tok,
-                   "model": args.model, "prompt_version": PROMPT_VERSION}
-            f.write((json.dumps(row) + "\n").encode("utf-8"))
-            if i % 50 == 0 or i == len(rows):
-                print(f"  {i}/{len(rows)} ({(time.time() - t0) / i:.2f}s per question)")
-    print(f"wrote {out_path.relative_to(ROOT)}")
+    run_file(tok, model, args.model, args.contexts, records, args.limit)

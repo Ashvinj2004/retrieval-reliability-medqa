@@ -153,6 +153,14 @@ abstracts must be measured and reported.
   `label_mass` < 0.95). Any change is judged on dev only and bumps
   `PROMPT_VERSION`.
 - Test is then run once with these choices, all four conditions, both retrievers.
+- **Generator fallback (added 2026-11-13, before any model output):** if Llama
+  access is not granted in time, Qwen2.5-7B-Instruct (ungated, same size class,
+  passes the single-token label check) is used with the identical pipeline, and
+  reported as a deviation. `run_all.py` picks the model and logs why.
+- **Automation:** `run_all.py` applies every rule above mechanically, freezes the
+  chosen settings in `data/final_settings.json` (marked `test_started` before
+  the first test question), then runs test once. `evaluate.py --final` reads k
+  and tau only from that file.
 
 ---
 
