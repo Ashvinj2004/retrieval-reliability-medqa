@@ -29,6 +29,9 @@ import zipfile
 from datetime import date
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Lets PyTorch reuse fragmented GPU memory (the fix its own out-of-memory message suggests). Set
+# before torch is imported, and inherited by every script this one starts.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 LLAMA = "meta-llama/Llama-3.1-8B-Instruct"
 QWEN = "Qwen/Qwen2.5-7B-Instruct"
 SMOKE_MODEL = "HuggingFaceTB/SmolLM2-135M-Instruct"

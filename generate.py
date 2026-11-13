@@ -64,8 +64,12 @@ def load_model(name):
 
     tok = AutoTokenizer.from_pretrained(name)
     if torch.cuda.is_available():
-        # FP16 on Kaggle's T4s (no BF16); device_map splits the 8B model over both GPUs.
-        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float16, device_map="auto")
+        # FP16 on Kaggle's T4s (no BF16). Capping each GPU at 10 GiB of weights splits the model
+        # evenly and leaves ~4.5 GiB per GPU for activations: an uncapped split filled GPU 0 and
+        # ran out of memory on the longest (k = 10) prompts.
+        max_memory = {i: "10GiB" for i in range(torch.cuda.device_count())}
+        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float16, device_map="auto",
+                                                     max_memory=max_memory)
     else:
         model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float32)
     return tok, model.eval()
@@ -79,9 +83,23 @@ def score(tok, model, label_ids, messages):
     # prompt identical whatever day the run happens (templates without that variable ignore it).
     enc = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt",
                                   return_dict=True, date_string=TEMPLATE_DATE)
-    ids = enc["input_ids"]
-    with torch.no_grad():
-        logits = model(ids.to(model.device)).logits[0, -1].float()  # next-token logits at the answer position
+    ids = enc["input_ids"].to(model.device)
+
+    def forward():
+        with torch.no_grad():
+            try:
+                # Only the answer position's logits are needed; computing them for every prompt token
+                # costs ~1 GB at 3,600 tokens. The values at the last position are identical either way.
+                out = model(ids, logits_to_keep=1)
+            except TypeError:  # older transformers without logits_to_keep
+                out = model(ids)
+        return out.logits[0, -1].float()  # next-token logits at the answer position
+
+    try:
+        logits = forward()
+    except torch.OutOfMemoryError:
+        torch.cuda.empty_cache()  # free cached blocks once and retry; a second failure stops the run loudly
+        logits = forward()
     p = torch.softmax(logits, dim=-1)
     raw = {lab: float(p[t].sum()) for lab, t in label_ids.items()}
     mass = sum(raw.values())
