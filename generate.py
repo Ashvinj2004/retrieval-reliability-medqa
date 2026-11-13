@@ -79,6 +79,18 @@ def load_model(name):
     return tok, model.eval()
 
 
+ATTENTION = {"efficient": False}  # switched on only if the default attention runs out of GPU memory
+
+
+def attention_context():
+    import contextlib
+
+    if not ATTENTION["efficient"]:
+        return contextlib.nullcontext()
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+    return sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION])
+
+
 def score(tok, model, label_ids, messages):
     """Renormalised label probabilities, label mass, and prompt length for one question."""
     import torch
@@ -90,7 +102,7 @@ def score(tok, model, label_ids, messages):
     ids = enc["input_ids"].to(model.device)
 
     def forward():
-        with torch.no_grad():
+        with torch.no_grad(), attention_context():
             try:
                 # Only the answer position's logits are needed; computing them for every prompt token
                 # costs ~1 GB at 3,600 tokens. The values at the last position are identical either way.
@@ -103,8 +115,14 @@ def score(tok, model, label_ids, messages):
     try:
         logits = forward()
     except torch.OutOfMemoryError:
-        torch.cuda.empty_cache()  # free cached blocks once and retry; a second failure stops the run loudly
-        logits = forward()
+        torch.cuda.empty_cache()
+        if not ATTENTION["efficient"]:
+            # Same exact attention, computed without materialising the tokens x tokens matrix. Used only
+            # when needed, recorded in every output row; differences are floating-point rounding.
+            ATTENTION["efficient"] = True
+            print("  out of GPU memory: switching to memory-efficient attention for the rest of the run", flush=True)
+        logits = forward()  # a further failure stops the run loudly
+    p = torch.softmax(logits, dim=-1)
     p = torch.softmax(logits, dim=-1)
     raw = {lab: float(p[t].sum()) for lab, t in label_ids.items()}
     mass = sum(raw.values())
@@ -141,7 +159,8 @@ def run_file(tok, model, model_name, contexts_path, records, limit=None):
             row = {"qid": r["qid"], "condition": r["condition"], "retriever": r["retriever"], "k": r["k"],
                    "source_in_context": r["source_in_context"], "pred": pred, "confidence": probs[pred],
                    "probs": probs, "label_mass": mass, "prompt_tokens": n_tok,
-                   "model": model_name, "model_revision": revision, "prompt_version": PROMPT_VERSION}
+                   "model": model_name, "model_revision": revision, "prompt_version": PROMPT_VERSION,
+                   "attention": "efficient" if ATTENTION["efficient"] else "default"}
             f.write((json.dumps(row) + "\n").encode("utf-8"))
             if i % 100 == 0 or i == len(rows):
                 print(f"  {out.name}: {i}/{len(rows)} ({(time.time() - t0) / i:.2f}s per question)")

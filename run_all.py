@@ -72,6 +72,35 @@ def reuse_previous_outputs(input_root="/kaggle/input"):
     return copied
 
 
+def stress_test(tok, model, records, files):
+    """Answer the single longest prompt first, so a memory problem shows in minutes, not hours.
+
+    generate.score() switches to memory-efficient attention by itself if the default runs out of
+    memory; if even that fails, the run stops here, minutes after starting.
+    """
+    import torch
+
+    from generate import ATTENTION, TEMPLATE_DATE, build_messages, label_token_ids, read_jsonl, score
+
+    longest, n_max = None, 0
+    for f in files:
+        for r in read_jsonl(f):
+            msgs = build_messages(records[r["qid"]]["question"], r["documents"])
+            n = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors="pt", return_dict=True,
+                                        date_string=TEMPLATE_DATE)["input_ids"].shape[1]
+            if n > n_max:
+                longest, n_max = msgs, n
+    print(f"\nstress test: longest prompt has {n_max} tokens", flush=True)
+    gpus = range(torch.cuda.device_count())
+    for i in gpus:
+        torch.cuda.reset_peak_memory_stats(i)
+    score(tok, model, label_token_ids(tok), longest)
+    for i in gpus:
+        peak, total = torch.cuda.max_memory_allocated(i) / 2**30, torch.cuda.get_device_properties(i).total_memory / 2**30
+        print(f"  GPU {i}: peak {peak:.1f} of {total:.1f} GiB", flush=True)
+    print(f"stress test passed (attention: {'memory-efficient' if ATTENTION['efficient'] else 'default'})", flush=True)
+
+
 def run(*args):
     """Run one of our scripts; any failure stops everything (the scripts fail loudly on bad data)."""
     print(f"\n$ python {' '.join(args)}", flush=True)
@@ -173,6 +202,7 @@ def main(smoke):
 
     # 3: format check, then 4: every dev answer. The model is loaded once.
     tok, model = load_model(model_name)
+    stress_test(tok, model, records, context_files("dev", {r: [max(KS)] for r in retrievers}, ("C2",), False))
     dev_tag = tag("dev", None, n_q, lim)
     check = run_file(tok, model, model_name, OUT / f"contexts_{dev_tag}_C3.jsonl", records, limit=20)
     mass = sum(r["label_mass"] for r in read_jsonl(check)) / 20
