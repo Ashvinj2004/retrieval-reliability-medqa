@@ -118,6 +118,35 @@ def main(model, prompt_version, tag, ks):
             if "C2_vs_C1_without_memorised" in d.get("memorisation", {}):
                 md.append(f"- C2 - C1 without memorised questions, {NAMES[r]}: {ci(d['memorisation']['C2_vs_C1_without_memorised'])}")
 
+    # Table 7: precision / recall / F1 per class (C1, C3, and C2 per retriever).
+    if "per_class" in first["conditions"]["C1"]:
+        md.append("\n## Table 7. Precision / recall / F1 per class\n")
+        md.append("| Condition | yes P | yes R | yes F1 | no P | no R | no F1 | maybe P | maybe R | maybe F1 |")
+        md.append("|---|---|---|---|---|---|---|---|---|---|")
+        pc_rows = [("C1", first["conditions"]["C1"]), ("C3", first["conditions"]["C3"])]
+        pc_rows += [(f"C2 {NAMES[r]}", d["conditions"]["C2"]) for r, d in res.items()]
+        for name, s in pc_rows:
+            cells = [f"{100 * s['per_class'][c][m]:.1f}" if m != "f1" else f"{s['per_class'][c][m]:.3f}"
+                     for c in ("yes", "no", "maybe") for m in ("precision", "recall", "f1")]
+            md.append(f"| {name} | " + " | ".join(cells) + " |")
+
+    def save(fig, name):
+        # Vector PDF for the paper (sharp at any zoom) plus a 300-dpi PNG for quick viewing.
+        fig.tight_layout()
+        fig.savefig(out_dir / f"{name}.pdf")
+        fig.savefig(out_dir / f"{name}.png", dpi=300)
+        plt.close(fig)
+
+    # Figure 3: Recall@k of the source per retriever.
+    if rec:
+        fig, ax = plt.subplots(figsize=(5, 3.6))
+        for r, v in rec.items():
+            ax.plot(list(KS), [100 * v[k] for k in KS], "o-", label=NAMES[r])
+        ax.set(xlabel="k (abstracts retrieved)", ylabel="Recall@k of the source (%)", xticks=list(KS))
+        ax.grid(alpha=0.3)
+        ax.legend()
+        save(fig, "fig_recall")
+
     # Figure 1: risk-coverage curves, one panel per retriever.
     fig, axes = plt.subplots(1, len(res), figsize=(5.2 * len(res), 3.8), squeeze=False)
     for ax, (r, d) in zip(axes[0], res.items()):
@@ -127,9 +156,7 @@ def main(model, prompt_version, tag, ks):
         ax.set(title=f"{NAMES[r]} (k={ks[r]})", xlabel="coverage (share of questions answered)", ylabel="risk (error rate)")
         ax.grid(alpha=0.3)
         ax.legend()
-    fig.tight_layout()
-    fig.savefig(out_dir / "fig_risk_coverage.png", dpi=200)
-    plt.close(fig)
+    save(fig, "fig_risk_coverage")
 
     # Figure 2: dev k-sweep (the pre-registered choice of k).
     if SETTINGS.exists():
@@ -141,14 +168,12 @@ def main(model, prompt_version, tag, ks):
             ax.set(xlabel="k (abstracts in context)", ylabel="dev C2 macro-F1", xticks=list(KS))
             ax.grid(alpha=0.3)
             ax.legend()
-            fig.tight_layout()
-            fig.savefig(out_dir / "fig_k_sweep.png", dpi=200)
-            plt.close(fig)
+            save(fig, "fig_k_sweep")
 
     (out_dir / "results.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     (out_dir / "table1.tex").write_text("\n".join(tex) + "\n", encoding="utf-8")
     print("\n".join(md))
-    print(f"\nwrote {out_dir.relative_to(ROOT)}/ (results.md, table1.tex, fig_risk_coverage.png, fig_k_sweep.png)")
+    print(f"\nwrote {out_dir.relative_to(ROOT)}/ (results.md, table1.tex, figures as .pdf and .png)")
 
 
 if __name__ == "__main__":

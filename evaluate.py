@@ -44,6 +44,7 @@ def summary(rows, qids, gold, tau):
     return {
         "n": len(qids), "accuracy": accuracy(g, p), "macro_f1": macro_f1(g, p),
         "recall_maybe": per_class(g, p)["maybe"]["recall"],
+        "per_class": per_class(g, p),  # precision / recall / F1 / support for yes, no, maybe
         "confident_error": confident_error_rate(g, p, c, tau), "ece": ece(g, p, c),
         "aurc": risk_coverage(g, p, c)[2], "mean_conf": sum(c) / len(c),
         "mean_label_mass": sum(rows[q]["label_mass"] for q in qids) / len(qids),
