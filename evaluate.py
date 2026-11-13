@@ -181,6 +181,28 @@ if __name__ == "__main__":
     else:
         print(f"\n(no memorisation probe file {ppath.name}; skipped)")
 
+    # POST HOC (added after the test results, not pre-registered): yes-vs-no judgement under the
+    # 'maybe' habit. The v1 prompt led the model to answer 'maybe' for most questions. On the
+    # questions whose gold label is yes or no, we ask which of yes / no the model rates more likely.
+    # Uses the stored probabilities only; nothing is re-run and no setting is changed.
+    yn = [q for q in qids if gold[q] != "maybe"]
+    binary = {c: [(rows[q]["probs"]["yes"] > rows[q]["probs"]["no"]) == (gold[q] == "yes") for q in yn]
+              for c, rows in cond.items()}
+    results["posthoc_binary"] = {"n": len(yn), "always_yes": sum(gold[q] == "yes" for q in yn) / len(yn),
+                                 "accuracy": {c: sum(v) / len(v) for c, v in binary.items()},
+                                 "predicted_maybe": {c: sum(rows[q]["pred"] == "maybe" for q in qids) / len(qids)
+                                                     for c, rows in cond.items()}}
+    print(f"\nPOST HOC yes-vs-no accuracy on the {len(yn)} yes/no questions "
+          f"(always 'yes' = {results['posthoc_binary']['always_yes']:.1%}):")
+    for c in cond:
+        print(f"  {c:<5} {results['posthoc_binary']['accuracy'][c]:.1%}   "
+              f"(answered 'maybe' on {results['posthoc_binary']['predicted_maybe'][c]:.0%} of all questions)")
+    for a, b in (("C1", "C2"), ("C2", "C3"), ("C2", "C2b")):
+        d, lo, hi = paired_bootstrap_ci(binary[a], binary[b])
+        nb, nc, p = mcnemar_exact(binary[a], binary[b])
+        results["posthoc_binary"][f"{b}_vs_{a}"] = {"diff": d, "ci": [lo, hi], "mcnemar_p": p}
+        print(f"  {b} - {a}: {d:+.1%}  95% CI [{lo:+.1%}, {hi:+.1%}]  McNemar p={p:.3g}")
+
     # Raw risk-coverage curves for the figures (coverage = i / n for i = 1..n).
     results["risk_curves"] = {c: risk_coverage([gold[q] for q in qids], [rows[q]["pred"] for q in qids],
                                                [rows[q]["confidence"] for q in qids])[1] for c, rows in cond.items()}

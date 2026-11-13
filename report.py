@@ -130,6 +130,23 @@ def main(model, prompt_version, tag, ks):
                      for c in ("yes", "no", "maybe") for m in ("precision", "recall", "f1")]
             md.append(f"| {name} | " + " | ".join(cells) + " |")
 
+    # Table 8 (POST HOC, not pre-registered): yes-vs-no judgement on the yes/no questions.
+    if "posthoc_binary" in first:
+        pb0 = first["posthoc_binary"]
+        md.append(f"\n## Table 8. POST HOC: yes-vs-no accuracy on the {pb0['n']} yes/no questions "
+                  f"(always 'yes' = {pct(pb0['always_yes'])}%)\n")
+        md.append("| Condition | answered 'maybe' % (all qs) | yes-vs-no accuracy % |\n|---|---|---|")
+        brow = [("C1", "C1", first), ("C3", "C3", first)] + \
+               [(f"{c} {NAMES[r]}", c, d) for r, d in res.items() for c in ("C2", "C2b")]
+        for name, c, d in brow:
+            pb = d["posthoc_binary"]
+            md.append(f"| {name} | {pct(pb['predicted_maybe'][c])} | {pct(pb['accuracy'][c])} |")
+        md.append("\n| Retriever | C2 - C1 | C3 - C2 | C2b - C2 |\n|---|---|---|---|")
+        for r, d in res.items():
+            pb = d["posthoc_binary"]
+            md.append(f"| {NAMES[r]} | " + " | ".join(f"{ci(pb[key])} (p={pb[key]['mcnemar_p']:.2g})"
+                                                     for key in ("C2_vs_C1", "C3_vs_C2", "C2b_vs_C2")) + " |")
+
     def save(fig, name):
         # Vector PDF for the paper (sharp at any zoom) plus a 300-dpi PNG for quick viewing.
         fig.tight_layout()
