@@ -45,6 +45,33 @@ def ensure_packages():
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", *missing], check=True)
 
 
+def reuse_previous_outputs(input_root="/kaggle/input"):
+    """Copy finished files from an earlier run's output, attached via Kaggle's "Add Input".
+
+    Only complete files exist in such an output (generate.py and probe.py rename a file only when it
+    is finished), and each reused file is still checked when used: row counts by run_file/run_probe,
+    the corpus SHA-256 by medcpt.py. Generation file names carry the model and prompt version, so a
+    file from another model or prompt can never be picked up.
+    """
+    import glob
+    import shutil
+
+    copied = 0
+    for src_art in glob.glob(os.path.join(input_root, "**", "artifacts"), recursive=True):
+        if os.path.abspath(src_art) == os.path.join(ROOT_DIR, "artifacts"):
+            continue
+        for sub in ("generations", "probe", "medcpt"):
+            for src in glob.glob(os.path.join(src_art, sub, "*")):
+                dst = os.path.join(ROOT_DIR, "artifacts", sub, os.path.basename(src))
+                if os.path.isfile(src) and not src.endswith(".partial") and not os.path.exists(dst):
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                    copied += 1
+    if copied:
+        print(f"reused {copied} finished file(s) from a previous run's output", flush=True)
+    return copied
+
+
 def run(*args):
     """Run one of our scripts; any failure stops everything (the scripts fail loudly on bad data)."""
     print(f"\n$ python {' '.join(args)}", flush=True)
@@ -103,7 +130,9 @@ def main(smoke):
         assert json.loads(committed)["sha256"] == json.loads(rebuilt)["sha256"], \
             "rebuilt corpus differs from the committed one: results would not match the paper"
     run("index.py", *(["--limit", str(lim)] if smoke else []))
-    meta = ROOT / "artifacts" / ("medcpt" if not smoke else f"medcpt_limit{lim}") / "meta.json"
+    if not smoke:
+        log["reused_files"] = reuse_previous_outputs()
+    meta =ROOT / "artifacts" / ("medcpt" if not smoke else f"medcpt_limit{lim}") / "meta.json"
     run("medcpt.py", *(["--limit", str(lim)] if smoke else []), *(["--skip-encode"] if meta.exists() else []),
         "--batch-size", "128")
     for r in retrievers:
