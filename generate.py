@@ -64,12 +64,16 @@ def load_model(name):
 
     tok = AutoTokenizer.from_pretrained(name)
     if torch.cuda.is_available():
-        # FP16 on Kaggle's T4s (no BF16). Capping each GPU at 10 GiB of weights splits the model
-        # evenly and leaves ~4.5 GiB per GPU for activations: an uncapped split filled GPU 0 and
-        # ran out of memory on the longest (k = 10) prompts.
-        max_memory = {i: "10GiB" for i in range(torch.cuda.device_count())}
+        # FP16 on Kaggle's T4s (no BF16). The weights (~14.2 GiB for 7-8B) are capped at 7.5 / 8.5 GiB
+        # per GPU, leaving ~7 GiB on each for activations. On T4s attention materialises a
+        # (heads x tokens x tokens) matrix, ~4-5 GiB per layer for the ~3,800-token k = 10 prompts;
+        # a 10 GiB cap still ran out of memory there.
+        n_gpu = torch.cuda.device_count()
+        max_memory = {0: "7.5GiB", 1: "8.5GiB"} if n_gpu == 2 else {i: "12GiB" for i in range(n_gpu)}
         model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float16, device_map="auto",
                                                      max_memory=max_memory)
+        for i in range(n_gpu):
+            print(f"  GPU {i}: {torch.cuda.memory_allocated(i) / 2**30:.1f} GiB of weights loaded", flush=True)
     else:
         model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float32)
     return tok, model.eval()
@@ -90,9 +94,10 @@ def score(tok, model, label_ids, messages):
             try:
                 # Only the answer position's logits are needed; computing them for every prompt token
                 # costs ~1 GB at 3,600 tokens. The values at the last position are identical either way.
-                out = model(ids, logits_to_keep=1)
+                # use_cache=False: no key/value cache is kept, since nothing is generated after this token.
+                out = model(ids, logits_to_keep=1, use_cache=False)
             except TypeError:  # older transformers without logits_to_keep
-                out = model(ids)
+                out = model(ids, use_cache=False)
         return out.logits[0, -1].float()  # next-token logits at the answer position
 
     try:
