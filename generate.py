@@ -63,29 +63,66 @@ def load_model(name):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(name)
+    install_attention()
     if torch.cuda.is_available():
+        ATTENTION["mode"] = "expanded"
         # FP16 on Kaggle's T4s (no BF16). The weights (~14.2 GiB for 7-8B) are capped at 7.5 / 8.5 GiB
         # per GPU, leaving ~7 GiB on each for activations. On T4s attention materialises a
         # (heads x tokens x tokens) matrix, ~4-5 GiB per layer for the ~3,800-token k = 10 prompts;
         # a 10 GiB cap still ran out of memory there.
         n_gpu = torch.cuda.device_count()
         max_memory = {0: "7.5GiB", 1: "8.5GiB"} if n_gpu == 2 else {i: "12GiB" for i in range(n_gpu)}
-        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float16, device_map="auto",
+        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float16, device_map="auto", attn_implementation="sdpa",
                                                      max_memory=max_memory)
         for i in range(n_gpu):
             print(f"  GPU {i}: {torch.cuda.memory_allocated(i) / 2**30:.1f} GiB of weights loaded", flush=True)
     else:
-        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.float32, attn_implementation="sdpa")
     return tok, model.eval()
 
 
-ATTENTION = {"efficient": False}  # switched on only if the default attention runs out of GPU memory
+# "expanded" on GPU: see install_attention(). "default" is transformers' own SDPA path.
+ATTENTION = {"mode": "default"}
+
+
+def install_attention():
+    """Replace transformers' "sdpa" attention with an equivalent that fits T4 memory.
+
+    Qwen2.5 and Llama 3 use grouped-query attention (e.g. 28 query heads sharing 4 key/value heads).
+    PyTorch's memory-efficient attention kernel requires equal head counts, so with grouped heads it
+    falls back to a kernel that materialises a heads x tokens x tokens matrix: 3.3 GiB for our longest
+    (5,600-token) prompt, more than a T4 has free. Repeating each key/value head for its query group
+    is exactly what grouped-query attention means mathematically, costs ~40 MB, and lets the
+    memory-efficient kernel run. Inputs are single unpadded sequences, so plain causal attention
+    (no explicit mask) is exact. In "default" mode the original function is used unchanged.
+    """
+    import torch.nn.functional as F
+    from transformers import AttentionInterface
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward as original
+
+    def attention(module, query, key, value, attention_mask, dropout=0.0, scaling=None, **kwargs):
+        if ATTENTION["mode"] == "default":
+            return original(module, query, key, value, attention_mask, dropout=dropout, scaling=scaling, **kwargs)
+        n_rep = query.shape[1] // key.shape[1]
+        if n_rep > 1:  # same head order as transformers' repeat_kv: each KV head serves n_rep consecutive query heads
+            key, value = key.repeat_interleave(n_rep, dim=1), value.repeat_interleave(n_rep, dim=1)
+        # Causal only when queries cover the whole sequence (the prompt); a single decoding step attends to all.
+        out = F.scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0,
+                                             is_causal=query.shape[2] > 1 and query.shape[2] == key.shape[2],
+                                             scale=scaling)
+        return out.transpose(1, 2).contiguous(), None
+
+    AttentionInterface.register("sdpa", attention)
 
 
 def attention_context():
+    """On GPU in expanded mode, allow ONLY the memory-efficient kernel: if it cannot run, fail loudly
+    at the stress test instead of silently falling back to the memory-hungry one."""
     import contextlib
 
-    if not ATTENTION["efficient"]:
+    import torch
+
+    if ATTENTION["mode"] != "expanded" or not torch.cuda.is_available():
         return contextlib.nullcontext()
     from torch.nn.attention import SDPBackend, sdpa_kernel
     return sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION])
@@ -115,14 +152,8 @@ def score(tok, model, label_ids, messages):
     try:
         logits = forward()
     except torch.OutOfMemoryError:
-        torch.cuda.empty_cache()
-        if not ATTENTION["efficient"]:
-            # Same exact attention, computed without materialising the tokens x tokens matrix. Used only
-            # when needed, recorded in every output row; differences are floating-point rounding.
-            ATTENTION["efficient"] = True
-            print("  out of GPU memory: switching to memory-efficient attention for the rest of the run", flush=True)
-        logits = forward()  # a further failure stops the run loudly
-    p = torch.softmax(logits, dim=-1)
+        torch.cuda.empty_cache()  # free cached blocks once and retry; a second failure stops the run loudly
+        logits = forward()
     p = torch.softmax(logits, dim=-1)
     raw = {lab: float(p[t].sum()) for lab, t in label_ids.items()}
     mass = sum(raw.values())
@@ -160,7 +191,7 @@ def run_file(tok, model, model_name, contexts_path, records, limit=None):
                    "source_in_context": r["source_in_context"], "pred": pred, "confidence": probs[pred],
                    "probs": probs, "label_mass": mass, "prompt_tokens": n_tok,
                    "model": model_name, "model_revision": revision, "prompt_version": PROMPT_VERSION,
-                   "attention": "efficient" if ATTENTION["efficient"] else "default"}
+                   "attention": ATTENTION["mode"]}
             f.write((json.dumps(row) + "\n").encode("utf-8"))
             if i % 100 == 0 or i == len(rows):
                 print(f"  {out.name}: {i}/{len(rows)} ({(time.time() - t0) / i:.2f}s per question)")

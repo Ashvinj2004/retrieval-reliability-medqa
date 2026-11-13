@@ -82,23 +82,40 @@ def stress_test(tok, model, records, files):
 
     from generate import ATTENTION, TEMPLATE_DATE, build_messages, label_token_ids, read_jsonl, score
 
-    longest, n_max = None, 0
+    prompts = []
     for f in files:
         for r in read_jsonl(f):
             msgs = build_messages(records[r["qid"]]["question"], r["documents"])
             n = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors="pt", return_dict=True,
                                         date_string=TEMPLATE_DATE)["input_ids"].shape[1]
-            if n > n_max:
-                longest, n_max = msgs, n
+            prompts.append((n, msgs))
+    prompts.sort(key=lambda x: x[0])
+    labels = label_token_ids(tok)
+
+    # 1) Equivalence: on short and medium prompts (which the default path handles), both attention
+    #    modes must give the same probabilities. This also covers files reused from earlier runs.
+    mode, worst = ATTENTION["mode"], 0.0
+    for n, msgs in (prompts[0], prompts[len(prompts) // 4]):
+        ATTENTION["mode"] = "default"
+        a = score(tok, model, labels, msgs)[0]
+        ATTENTION["mode"] = mode
+        b = score(tok, model, labels, msgs)[0]
+        worst = max(worst, max(abs(a[k] - b[k]) for k in a))
+        print(f"  attention modes agree on a {n}-token prompt: max probability difference {max(abs(a[k] - b[k]) for k in a):.1e}",
+              flush=True)
+    assert worst < 1e-2, f"attention modes disagree ({worst:.3f}); stopping before any result is affected"
+
+    # 2) Memory: the single longest prompt must fit.
+    n_max, longest = prompts[-1]
     print(f"\nstress test: longest prompt has {n_max} tokens", flush=True)
     gpus = range(torch.cuda.device_count())
     for i in gpus:
         torch.cuda.reset_peak_memory_stats(i)
-    score(tok, model, label_token_ids(tok), longest)
+    score(tok, model, labels, longest)
     for i in gpus:
         peak, total = torch.cuda.max_memory_allocated(i) / 2**30, torch.cuda.get_device_properties(i).total_memory / 2**30
         print(f"  GPU {i}: peak {peak:.1f} of {total:.1f} GiB", flush=True)
-    print(f"stress test passed (attention: {'memory-efficient' if ATTENTION['efficient'] else 'default'})", flush=True)
+    print(f"stress test passed (attention: {ATTENTION['mode']})", flush=True)
 
 
 def run(*args):
