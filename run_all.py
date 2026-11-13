@@ -8,8 +8,9 @@ script applies the rules mechanically, without anyone looking at results first:
   1  rebuild the corpus; its SHA-256 must equal the committed one
   2  BM25 + MedCPT retrieval for the dev questions
   3  20-question format check: stop if mean label_mass < 0.95
-  4  all dev answers (C1, C3, C2/C2b for both retrievers and every k)
-  5  choose k per retriever by the rule, freeze data/final_settings.json, dev analysis
+  4  dev answers for C1, C3 and C2 at every k (all the k rule needs)
+  5  choose k per retriever by the rule, freeze data/final_settings.json, then C2b at the
+     chosen k only (RQ3 uses C2b at that k; other k would cost GPU time for nothing), dev analysis
   6  the test run, ONCE, with the frozen settings
   7  evaluate test, build tables and figures, zip everything into results.zip
 
@@ -108,13 +109,35 @@ def main(smoke):
     records = load_pqal()
     dev, test = load_split(records)
 
-    def context_files(split, ks_by_retriever):
+    def context_files(split, ks_by_retriever, conditions=("C2", "C2b"), with_c1_c3=True):
         base = tag(split, None, n_q, lim)
-        files = [OUT / f"contexts_{base}_C1.jsonl", OUT / f"contexts_{base}_C3.jsonl"]
+        files = [OUT / f"contexts_{base}_C1.jsonl", OUT / f"contexts_{base}_C3.jsonl"] if with_c1_c3 else []
         for r, ks in ks_by_retriever.items():
             t = tag(split, r, n_q, lim)
-            files += [OUT / f"contexts_{t}_k{k}_{c}.jsonl" for k in ks for c in ("C2", "C2b")]
+            files += [OUT / f"contexts_{t}_k{k}_{c}.jsonl" for k in ks for c in conditions]
         return files
+
+    def work(path):
+        """Rough cost of a context file: one unit per question plus one per document it carries."""
+        return sum(1 + len(r["doc_pmids"]) for r in read_jsonl(path))
+
+    t_start = time.time()
+    done_units = 0.0
+
+    def generate_all(files, planned_after):
+        """Score files and print a MEASURED projection of the total run time (Kaggle stops runs at 12 h)."""
+        nonlocal done_units
+        for f in files:
+            t0 = time.time()
+            out = run_file(tok, model, model_name, f, records)
+            if time.time() - t0 > 5:  # only files actually computed in this session count toward the rate
+                done_units += work(f)
+                rate = (time.time() - t_start) / done_units
+                remaining = sum(work(x) for x in files[files.index(f) + 1:]) + planned_after
+                eta_h = (time.time() - t_start + rate * remaining) / 3600
+                print(f"  [time] {(time.time() - t_start) / 3600:.1f} h elapsed; projected total ~{eta_h:.1f} h"
+                      f"{'  WARNING: above Kaggle 12 h limit' if eta_h > 11.5 else ''}", flush=True)
+            del out
 
     # 3: format check, then 4: every dev answer. The model is loaded once.
     tok, model = load_model(model_name)
@@ -125,8 +148,11 @@ def main(smoke):
     print(f"\nformat check: mean label_mass on 20 dev questions = {mass:.3f} (must be >= {MIN_LABEL_MASS})", flush=True)
     if not smoke:  # the tiny smoke model cannot pass this; only the plumbing is tested there
         assert mass >= MIN_LABEL_MASS, "format check failed: the prompt must be revised on dev before any result counts"
-    for f in context_files("dev", {r: KS for r in retrievers}):
-        run_file(tok, model, model_name, f, records)
+    # The k rule needs C2 at every k; C2b is analysed only at the chosen k, so it waits for the freeze.
+    dev_pass1 = context_files("dev", {r: KS for r in retrievers}, conditions=("C2",))
+    later = sum(work(f) for f in context_files("dev", {r: [5] for r in retrievers}, ("C2b",), False))  # ~C2b at chosen k
+    later += sum(work(f) for f in context_files("dev", {r: [5] for r in retrievers}))  # ~the test run
+    generate_all(dev_pass1, planned_after=later)
 
     # 5: the pre-registered k rule, frozen before any test question is run; dev analysis and probe.
     if SETTINGS.exists() and not json.loads(SETTINGS.read_text(encoding="utf-8")).get("test_started"):
@@ -135,6 +161,9 @@ def main(smoke):
         for r in retrievers:
             run("evaluate.py", "--model", short, "--tag", dev_tag, "--retriever", r, "--sweep", "--freeze")
     settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
+    chosen = {r: [settings["k"][r]] for r in retrievers}
+    generate_all(context_files("dev", chosen, ("C2b",), False),
+                 planned_after=sum(work(f) for f in context_files("dev", chosen)))  # ~the test run
     run_probe(tok, model, model_name, records, dev[:n_q], "dev", n_q)
     for r in retrievers:
         run("evaluate.py", "--model", short, "--tag", dev_tag, "--retriever", r, "--k", str(settings["k"][r]))
@@ -148,8 +177,7 @@ def main(smoke):
     if not smoke:
         for r in retrievers:
             run("retrieve.py", "--retriever", r, "--split", "test")
-    for f in context_files(final_split, {r: [settings["k"][r]] for r in retrievers}):
-        run_file(tok, model, model_name, f, records)
+    generate_all(context_files(final_split, chosen), planned_after=0)
     run_probe(tok, model, model_name, records, (dev if smoke else test)[:n_q], final_split, n_q)
 
     # 7: final evaluation (k and tau read from the frozen settings), report, one zip.
