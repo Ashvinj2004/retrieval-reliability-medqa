@@ -16,3 +16,6 @@ artifacts/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Submission and result archives
+*.zip
